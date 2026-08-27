@@ -81,7 +81,7 @@ struct ContentView: View {
         .frame(width: 400, height: 450,alignment: .top)
         
         .overlay(
-                    Text(verbatim: "heejae6999@gmail.com") // 내가 만듦ㅋ 으캬캬
+                    Text(verbatim: "heejae6999@gmail.com") // 내가 만듦
                         .font(.caption2)
                         .foregroundColor(.gray.opacity(0.8))
                         .padding(.leading, 15)
