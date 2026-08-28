@@ -10,10 +10,10 @@ extension KeyboardShortcuts.Name {
 struct SmartCaptureAppApp: App {
     
     init() {
-        /*if let bundleID = Bundle.main.bundleIdentifier {
+        if let bundleID = Bundle.main.bundleIdentifier {
                     UserDefaults.standard.removePersistentDomain(forName: bundleID)
                 }
-     */
+     
         // 캡쳐 실행 단축키
         KeyboardShortcuts.onKeyDown(for: .captureExecution) {
             CaptureWindowManager.shared.show()

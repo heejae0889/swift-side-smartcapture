@@ -13,7 +13,7 @@ struct ContentView: View {
     @AppStorage("presetText") private var presetText = "이 내용을 한국어로 요약해줘"
     @AppStorage("popupPosition") private var popupPosition = 1
     @AppStorage("userAPIKey") private var userAPIKey = ""
-    @AppStorage("selectedModel") private var selectedModel = "gemini-flash-lite-latest"
+    @AppStorage("selectedModel") private var selectedModel = "gemini-3.5-flash-lite"
 
     var body: some View {
         Form {
@@ -32,9 +32,9 @@ struct ContentView: View {
                 }
                 .padding(.top, -10)
                 Picker("AI 선택:", selection: $selectedModel) {
-                        Text("Gemini Flash-Lite (빠른 속도, 보통 지능)").tag("gemini-flash-lite-latest")
-                        Text("Gemini Flash (중간 속도, 준수한 지능)").tag("gemini-flash-latest")
-                        Text("Gemini Pro (느린 속도, 고지능)").tag("gemini-pro-latest")
+                        Text("Gemini Flash-Lite (빠른 속도, 보통 지능)").tag("gemini-3.5-flash-lite")
+                        Text("Gemini Flash (중간 속도, 준수한 지능)").tag("gemini-3.6-flash")
+                        Text("Gemini Pro (느린 속도, 고지능)").tag("gemini-3.1-pro-preview")
                         
                 }
                 .padding(.top, 5)

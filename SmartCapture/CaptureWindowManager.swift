@@ -272,7 +272,7 @@ class CaptureWindowManager {
             // AppStorage에 저장된 사용자 키 가져오기
             let savedKey = UserDefaults.standard.string(forKey: "userAPIKey") ?? ""
             let apiKey = savedKey.trimmingCharacters(in: .whitespacesAndNewlines) // 혹시 모를 공백 제거
-            let selectedModel = UserDefaults.standard.string(forKey: "selectedModel") ?? "gemini-flash-lite-latest"
+            let selectedModel = UserDefaults.standard.string(forKey: "selectedModel") ?? "gemini-3.5-flash-lite"
             // 키가 비어있는지 검사 (키가 없으면 안내 메시지 띄우고 종료)
             guard !apiKey.isEmpty else {
                 DispatchQueue.main.async {
