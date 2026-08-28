@@ -20,7 +20,7 @@ class OverlayWindow: NSWindow {
     override var canBecomeMain: Bool { return true }
     override var acceptsFirstResponder: Bool { return true }
 }
-
+//브랜치 테스트용
 
 class FocusablePanel: NSPanel {
     override var canBecomeKey: Bool { return true }
