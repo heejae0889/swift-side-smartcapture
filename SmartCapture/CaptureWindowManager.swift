@@ -27,6 +27,13 @@ class FocusablePanel: NSPanel {
     override var canBecomeMain: Bool { return true }
     override var acceptsFirstResponder: Bool { return true }
 }
+
+class SettingsWindow: NSWindow{
+    override func resignKey() {
+        super.resignKey()
+        self.close()
+    }
+}
 class CaptureWindowManager {
     private var settingsWindow: NSWindow?
     static let shared = CaptureWindowManager()
@@ -58,7 +65,7 @@ class CaptureWindowManager {
     func showSettings() {
             DispatchQueue.main.async {
                 if self.settingsWindow == nil {
-                    let window = NSWindow(
+                    let window = SettingsWindow(
                         contentRect: NSRect(x: 0, y: 0, width: 400, height: 450),
                         styleMask: [.titled, .closable, .miniaturizable],
                         backing: .buffered,
@@ -269,9 +276,8 @@ class CaptureWindowManager {
         }
 
     func askGemini(userPrompt: String) {
-            // AppStorage에 저장된 사용자 키 가져오기
-            let savedKey = UserDefaults.standard.string(forKey: "userAPIKey") ?? ""
-            let apiKey = savedKey.trimmingCharacters(in: .whitespacesAndNewlines) // 혹시 모를 공백 제거
+            let savedKey = KeychainHelper.shared.read() ?? ""
+            let apiKey = savedKey.trimmingCharacters(in: .whitespacesAndNewlines)
             let selectedModel = UserDefaults.standard.string(forKey: "selectedModel") ?? "gemini-3.5-flash-lite"
             // 키가 비어있는지 검사 (키가 없으면 안내 메시지 띄우고 종료)
             guard !apiKey.isEmpty else {
@@ -324,7 +330,7 @@ class CaptureWindowManager {
             request.addValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-            // 비동기 Task로 서버 응답을 실시간으로 한 줄씩 읽어오기 (기존과 동일)
+            // 비동기 Task로 서버 응답을 실시간으로 한 줄씩 읽어오rl
             Task {
                 do {
                     let (bytes, _) = try await URLSession.shared.bytes(for: request)

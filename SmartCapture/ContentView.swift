@@ -12,14 +12,24 @@ struct ContentView: View {
     @AppStorage("isPresetMode") private var isPresetMode = false
     @AppStorage("presetText") private var presetText = "이 내용을 한국어로 요약해줘"
     @AppStorage("popupPosition") private var popupPosition = 1
-    @AppStorage("userAPIKey") private var userAPIKey = ""
+    @State private var  userAPIKey = ""
     @AppStorage("selectedModel") private var selectedModel = "gemini-3.5-flash-lite"
 
     var body: some View {
         Form {
             Section(header: Text("")) {
                 SecureField("API 키를 입력하세요", text: $userAPIKey)
-                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onAppear {
+                                        // 뷰가 나타날 때 키체인에서 키를 불러옴
+                                        if let savedKey = KeychainHelper.shared.read() {
+                                            userAPIKey = savedKey
+                                        }
+                                    }
+                                    .onChange(of: userAPIKey) {_, newValue in
+                                        // 값이 변경될 때마다 키체인에 암호화 저장
+                                        KeychainHelper.shared.save(newValue)
+                                    }
                 
                 HStack {
                     Text("API 키가 없으신가요?")
@@ -47,7 +57,7 @@ struct ContentView: View {
             .padding(.top, 2)
             Section(header: Text("")) {
                 Picker("결과창 위치:", selection: $popupPosition) {
-                    Text("마우스 포인터 주변 (스마트 조절)").tag(1)
+                    Text("마우스 주변").tag(1)
                     Text("화면 우측 상단").tag(2)
                     Text("화면 우측 하단").tag(3)
                     Text("화면 좌측 상단").tag(4)
