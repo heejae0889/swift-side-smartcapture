@@ -20,7 +20,6 @@ class OverlayWindow: NSWindow {
     override var canBecomeMain: Bool { return true }
     override var acceptsFirstResponder: Bool { return true }
 }
-//브랜치 테스트용
 
 class FocusablePanel: NSPanel {
     override var canBecomeKey: Bool { return true }
@@ -40,6 +39,7 @@ class CaptureWindowManager {
     
     private var overlayWindow: NSWindow?
     private var inputPanel: NSPanel?
+    private var inputHostingView: NSHostingView<FloatingInputView>?
     private var resultPanel: NSPanel?
     
     private var resultViewModel = ResultViewModel()
@@ -198,11 +198,18 @@ class CaptureWindowManager {
             DispatchQueue.main.async {
                 self.inputPanel?.close()
                 
-                let rect = self.getPanelRect(width: 250, height: 45)
-                let inputView = FloatingInputView { text in
-                    self.inputPanel?.orderOut(nil)
-                    self.askGemini(userPrompt: text)
-                }
+                let initialSize = CGSize(width: 250, height: 45)
+                let rect = self.getPanelRect(width: initialSize.width, height: initialSize.height)
+                let inputView = FloatingInputView(
+                    panelSize: initialSize,
+                    onSubmit: { text in
+                        self.inputPanel?.orderOut(nil)
+                        self.askGemini(userPrompt: text)
+                    },
+                    onResize: { [weak self] newSize in
+                        self?.resizeInputPanel(to: newSize)
+                    }
+                )
                 
                 let panel = FocusablePanel(
                     contentRect: rect,
@@ -224,7 +231,9 @@ class CaptureWindowManager {
                 panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
                 panel.standardWindowButton(.zoomButton)?.isHidden = true
                 panel.isMovableByWindowBackground = true
-                panel.contentView = NSHostingView(rootView: inputView)
+                let hostingView = NSHostingView(rootView: inputView)
+                panel.contentView = hostingView
+                self.inputHostingView = hostingView
                 self.inputPanel = panel
                 if let parent = self.overlayWindow {
                     parent.addChildWindow(panel, ordered: .above)
@@ -233,6 +242,51 @@ class CaptureWindowManager {
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
+
+    /// 질문 입력창의 텍스트 길이에 맞춰 NSPanel 자체의 frame을 부드럽게(탄력있게) 리사이즈한다.
+    /// - 너비가 늘어날 때는 오른쪽 가장자리를 고정한 채 왼쪽으로 확장
+    /// - 높이가 늘어날 때는 윗쪽 가장자리를 고정한 채 아래로 확장
+    ///
+    /// 핵심: SwiftUI 콘텐츠(panelSize)는 애니메이션 없이 곧바로 "목표 크기"로 갱신해서
+    /// 텍스트가 항상 완성된 모습으로 미리 준비되게 하고, 실제 화면에 보이는 "슬라이드로
+    /// 늘어나는" 모션은 오직 NSPanel의 창 프레임 애니메이션(clipped된 창 경계)이 담당한다.
+    /// 이렇게 하면 애니메이션 중간의 어떤 프레임에서도 텍스트가 좁은 폭 기준으로
+    /// 다시 줄바꿈되어 사라지는 현상이 생기지 않는다.
+    private func resizeInputPanel(to newSize: CGSize) {
+        guard let panel = self.inputPanel else { return }
+        let oldFrame = panel.frame
+        guard oldFrame.size != newSize else { return }
+
+        let deltaWidth = newSize.width - oldFrame.size.width
+        let deltaHeight = newSize.height - oldFrame.size.height
+
+        var newFrame = oldFrame
+        newFrame.size = newSize
+        // 오른쪽 고정 -> 왼쪽으로 확장
+        newFrame.origin.x -= deltaWidth
+        // 위쪽 고정 -> 아래로 확장 (AppKit 좌표계는 y가 아래쪽일수록 작아짐)
+        newFrame.origin.y -= deltaHeight
+
+        // SwiftUI 콘텐츠를 즉시 목표 크기로 갱신 (텍스트 레이아웃을 미리 최종 상태로 확정)
+        self.inputHostingView?.rootView = FloatingInputView(
+            panelSize: newSize,
+            onSubmit: { text in
+                self.inputPanel?.orderOut(nil)
+                self.askGemini(userPrompt: text)
+            },
+            onResize: { [weak self] size in
+                self?.resizeInputPanel(to: size)
+            }
+        )
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.38
+            // back-ease-out 스타일 커브: 목표치를 살짝 넘겼다가 튕기듯 돌아오는 탄력있는 느낌
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.34, 1.56, 0.64, 1.0)
+            context.allowsImplicitAnimation = true
+            panel.animator().setFrame(newFrame, display: true)
+        }
+    }
     
     func showResultPopup() {
             DispatchQueue.main.async {
@@ -330,7 +384,7 @@ class CaptureWindowManager {
             request.addValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-            // 비동기 Task로 서버 응답을 실시간으로 한 줄씩 읽어오rl
+            // 비동기 Task로 서버 응답을 실시간으로 한 줄씩 읽어옴
             Task {
                 do {
                     let (bytes, _) = try await URLSession.shared.bytes(for: request)
