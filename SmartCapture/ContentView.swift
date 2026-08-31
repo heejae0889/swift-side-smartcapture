@@ -158,110 +158,201 @@ struct CaptureOverlayView: View {
 }
 
 
+// 입력창 한 줄(라인) 개수에 따른 실제 픽셀 높이를 계산.
+// FloatingInputView와 CaptureWindowManager가 동일한 기준으로 높이를 맞추기 위해 공용으로 사용.
+let inputFieldFont = NSFont.systemFont(ofSize: 14)
+
+func calculateInputPanelHeight(forLines lines: Int) -> CGFloat {
+    let lineHeight = ceil(inputFieldFont.ascender - inputFieldFont.descender + inputFieldFont.leading)
+    let textContainerVerticalInset: CGFloat = 12   // GrowingTextView의 textContainerInset 상하 합(6+6)
+    // 주의: 바깥쪽 .padding(5) 여백은 FloatingInputView의 .frame(height: textHeight + 10)에서 별도로 더해지므로
+    // 여기서는 절대 중복으로 더하면 안 됨 (더하면 GrowingTextView 자체 높이가 실제 글자보다 커져서
+    // 세로 중앙 정렬용 여백 계산이 어긋나고 커서 위치가 밀림)
+    return ceil(CGFloat(lines) * lineHeight) + textContainerVerticalInset
+}
+
+// 줄바꿈이 되는 순간부터 실제 내용물 높이(usedRect)를 그대로 알려주는 오토그로우 텍스트뷰.
+// maxHeight를 넘어서면 스스로 커지는 대신 NSScrollView가 세로 스크롤을 담당한다.
+struct GrowingTextView: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var dynamicHeight: CGFloat
+    var minHeight: CGFloat
+    var maxHeight: CGFloat
+    var onSubmit: () -> Void
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let textView = NSTextView()
+        textView.delegate = context.coordinator
+        textView.font = inputFieldFont
+        textView.isRichText = false
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 4, height: 6)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        textView.string = text
+        textView.textColor = .labelColor
+        textView.typingAttributes = [.font: inputFieldFont, .foregroundColor: NSColor.labelColor]
+
+        let scrollView = NSScrollView()
+        scrollView.documentView = textView
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = false   // 6줄을 넘길 때만 명시적으로 켠다 (불필요한 깜빡임 방지)
+        scrollView.autohidesScrollers = false
+        scrollView.borderType = .noBorder
+        scrollView.verticalScrollElasticity = .automatic
+
+        context.coordinator.textView = textView
+        context.coordinator.scrollView = scrollView
+
+        // 창이 뜨자마자 바로 타이핑할 수 있도록 포커스 이동
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            textView.window?.makeFirstResponder(textView)
+        }
+
+        DispatchQueue.main.async {
+            context.coordinator.recalculateHeight()
+        }
+
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        guard let textView = context.coordinator.textView else { return }
+        if textView.string != text {
+            textView.string = text
+            textView.typingAttributes = [.font: inputFieldFont, .foregroundColor: NSColor.labelColor]
+            if let storage = textView.textStorage, storage.length > 0 {
+                storage.addAttribute(.font, value: inputFieldFont, range: NSRange(location: 0, length: storage.length))
+                storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: NSRange(location: 0, length: storage.length))
+            }
+        }
+        context.coordinator.recalculateHeight()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: GrowingTextView
+        weak var textView: NSTextView?
+        weak var scrollView: NSScrollView?
+
+        init(_ parent: GrowingTextView) {
+            self.parent = parent
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let tv = textView else { return }
+            enforceFont(on: tv)
+            parent.text = tv.string
+            recalculateHeight()
+        }
+
+        // 타이핑/한글 조합 중에 폰트가 시스템 기본값으로 슬쩍 바뀌는 것을 막기 위해
+        // 매번 전체 텍스트에 강제로 같은 폰트를 다시 씌워준다.
+        private func enforceFont(on tv: NSTextView) {
+            tv.typingAttributes = [.font: inputFieldFont, .foregroundColor: NSColor.labelColor]
+            if let storage = tv.textStorage, storage.length > 0 {
+                storage.addAttribute(.font, value: inputFieldFont, range: NSRange(location: 0, length: storage.length))
+                storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: NSRange(location: 0, length: storage.length))
+            }
+        }
+
+        // 엔터: 전송 / Shift+엔터: 줄바꿈
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                let flags = NSApp.currentEvent?.modifierFlags ?? []
+                if flags.contains(.shift) {
+                    textView.insertNewlineIgnoringFieldEditor(nil)
+                } else {
+                    parent.onSubmit()
+                }
+                return true
+            }
+            return false
+        }
+
+        func recalculateHeight() {
+            guard let tv = textView, let layoutManager = tv.layoutManager, let container = tv.textContainer, let scrollView = scrollView else { return }
+            layoutManager.ensureLayout(for: container)
+
+            let baseInset: CGFloat = 6 // 위/아래 기본 여백
+            let pureTextHeight = layoutManager.usedRect(for: container).height
+            let contentHeight = pureTextHeight + baseInset * 2
+            let newHeight = min(max(contentHeight, parent.minHeight), parent.maxHeight)
+
+            // 박스가 실제 글자보다 넉넉해서(=minHeight로 눌려서) 남는 여백은
+            // 위/아래에 똑같이 나눠줘서 텍스트가 세로 중앙에 오도록 함
+            let leftover = max(0, newHeight - contentHeight)
+            let verticalInset = baseInset + leftover / 2
+            if abs(tv.textContainerInset.height - verticalInset) > 0.5 {
+                tv.textContainerInset = NSSize(width: 4, height: verticalInset)
+            }
+
+            if abs(parent.dynamicHeight - newHeight) > 0.5 {
+                DispatchQueue.main.async {
+                    self.parent.dynamicHeight = newHeight
+                }
+            }
+
+            // 6줄(=maxHeight)을 실제로 넘어갈 때만 스크롤바 표시
+            let needsScroll = contentHeight > parent.maxHeight + 0.5
+            if scrollView.hasVerticalScroller != needsScroll {
+                scrollView.hasVerticalScroller = needsScroll
+            }
+        }
+    }
+}
+
 struct FloatingInputView: View {
     @State private var inputText: String = ""
-    @FocusState private var isFocused: Bool // 포커스 강제 제어
+    @State private var textHeight: CGFloat
 
-    /// 창(NSPanel)의 실제 콘텐츠 크기. CaptureWindowManager가 창을 애니메이션으로
-    /// 리사이즈할 때 window frame 변화에 맞춰 흘러들어온다.
-    var panelSize: CGSize
-
+    var panelWidth: CGFloat
+    var minHeight: CGFloat
+    var maxHeight: CGFloat
     var onSubmit: (String) -> Void
-    /// 텍스트 길이에 따라 콘텐츠 크기가 바뀔 때마다 호출됨.
-    /// CaptureWindowManager가 이 값을 받아 실제 NSPanel의 frame을 애니메이션으로 리사이즈한다.
-    var onResize: (CGSize) -> Void = { _ in }
+    var onHeightChange: (CGFloat) -> Void
 
-    // MARK: - 크기 계산 상수
-    private let minWidth: CGFloat = 250
-    private let maxWidth: CGFloat = 420
-    private let baseHeight: CGFloat = 45
-    private let maxHeight: CGFloat = 260
-    private let font = NSFont.systemFont(ofSize: 13)
-    private let horizontalPadding: CGFloat = 34 // TextField 내부 padding(8*2) + 바깥 padding(5*2) + 여유
-    private let verticalPadding: CGFloat = 29   // 줄바꿈 시 위아래 padding 여유
-
-    /// 아직 "가로로만 늘어나는 중"인 1단계인지 여부.
-    /// 이 단계에서는 TextField를 fixedSize(가로)로 그려서 컨테이너 폭에 눌려
-    /// 줄바꿈되지 않게 하고, 바깥에서 clipped()로 잘라 보여준다.
-    /// -> 창 리사이즈 애니메이션의 "중간 프레임"에도 텍스트 자체는 항상 완전한
-    ///    한 줄 형태로 존재하므로, 좁은 폭 기준 줄바꿈으로 텍스트가 사라지는 현상이 없다.
-    private var isSingleLinePhase: Bool {
-        let displayText = inputText.isEmpty ? " " : inputText
-        let singleLineWidth = (displayText as NSString)
-            .size(withAttributes: [.font: font])
-            .width
-        return singleLineWidth <= (maxWidth - horizontalPadding)
+    init(panelWidth: CGFloat, minHeight: CGFloat, maxHeight: CGFloat, onSubmit: @escaping (String) -> Void, onHeightChange: @escaping (CGFloat) -> Void) {
+        self.panelWidth = panelWidth
+        self.minHeight = minHeight
+        self.maxHeight = maxHeight
+        self.onSubmit = onSubmit
+        self.onHeightChange = onHeightChange
+        _textHeight = State(initialValue: minHeight)
     }
 
     var body: some View {
-        HStack(alignment: .top) {
-            Group {
-                if isSingleLinePhase {
-                    TextField("AI에게 물어보기...", text: $inputText)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .focused($isFocused)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false) // 실제 필요한 폭만큼 항상 한 줄로 그림 (컨테이너 폭에 안 눌림)
-                } else {
-                    TextField("AI에게 물어보기...", text: $inputText, axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .focused($isFocused)
-                        .lineLimit(1...12)
-                        .fixedSize(horizontal: false, vertical: true) // 실제 필요한 줄바꿈 높이만큼 자유롭게 늘어남
-                }
+        ZStack(alignment: .topLeading) {
+            if inputText.isEmpty {
+                Text("AI에게 물어보기...")
+                    .font(.system(size: 14))
+                    .foregroundColor(.gray.opacity(0.7))
+                    .padding(.leading, 9)   // NSTextView의 textContainerInset(4) + lineFragmentPadding(5) 기본값과 동일
+                    .padding(.top, 6)       // GrowingTextView의 기본 baseInset(6)과 동일
+                    .allowsHitTesting(false)
             }
-            .padding(8)
-            .background(Color(NSColor.windowBackgroundColor).opacity(0.9))
-            .cornerRadius(8)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.5)))
-            .onSubmit {
-                let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
+            GrowingTextView(text: $inputText, dynamicHeight: $textHeight, minHeight: minHeight, maxHeight: maxHeight) {
+                if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     onSubmit(inputText)
                 }
             }
         }
+        .background(Color(NSColor.windowBackgroundColor).opacity(0.9))
+        .cornerRadius(8)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.5)))
         .padding(5)
-        // panelSize를 그대로 따라감 (SwiftUI 쪽 별도 애니메이션은 걸지 않음 —
-        // 실제 창 리사이즈 애니메이션이 매 프레임 panelSize를 갱신해준다).
-        .frame(width: panelSize.width, height: panelSize.height, alignment: .topLeading)
-        .clipped() // 애니메이션 중간 프레임에서 콘텐츠가 컨테이너보다 커도 삐져나오지 않고 항상 깔끔히 잘려 보임
+        .frame(width: panelWidth, height: textHeight + 10) // 5+5 outer padding 포함
+        .onChange(of: textHeight) { _, newValue in
+            onHeightChange(newValue + 10)
+        }
         .onAppear {
-            // 창 뜨고 자동으로 클릭
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                isFocused = true
-            }
-        }
-        .onChange(of: inputText) { _, newValue in
-            let newSize = calculateSize(for: newValue)
-            guard newSize != panelSize else { return }
-            onResize(newSize)
-        }
-    }
-
-    /// 1) 너비가 maxWidth 이내면 텍스트 폭만큼 너비를 늘린다 (높이 고정)
-    /// 2) 너비가 maxWidth를 넘으면 그때부터는 너비를 고정하고 줄바꿈된 실제 텍스트 높이만큼 높이를 늘린다
-    private func calculateSize(for text: String) -> CGSize {
-        let displayText = text.isEmpty ? " " : text
-        let contentMaxWidth = maxWidth - horizontalPadding
-
-        let singleLineWidth = (displayText as NSString)
-            .size(withAttributes: [.font: font])
-            .width
-
-        if singleLineWidth <= contentMaxWidth {
-            let targetWidth = max(minWidth, ceil(singleLineWidth + horizontalPadding))
-            return CGSize(width: targetWidth, height: baseHeight)
-        } else {
-            let boundingRect = (displayText as NSString).boundingRect(
-                with: CGSize(width: contentMaxWidth, height: .greatestFiniteMagnitude),
-                options: [.usesLineFragmentOrigin, .usesFontLeading],
-                attributes: [.font: font]
-            )
-            let targetHeight = ceil(boundingRect.height) + verticalPadding
-            return CGSize(width: maxWidth, height: min(maxHeight, max(baseHeight, targetHeight)))
+            onHeightChange(minHeight + 10)
         }
     }
 }

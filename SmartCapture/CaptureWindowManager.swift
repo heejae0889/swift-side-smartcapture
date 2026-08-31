@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import QuartzCore
 import ScreenCaptureKit
 
 struct GeminiResponse: Codable, Sendable {
@@ -21,6 +22,7 @@ class OverlayWindow: NSWindow {
     override var acceptsFirstResponder: Bool { return true }
 }
 
+
 class FocusablePanel: NSPanel {
     override var canBecomeKey: Bool { return true }
     override var canBecomeMain: Bool { return true }
@@ -36,10 +38,12 @@ class SettingsWindow: NSWindow{
 class CaptureWindowManager {
     private var settingsWindow: NSWindow?
     static let shared = CaptureWindowManager()
-    
+
+    // 입력창과 답변창의 너비를 동일하게 맞추기 위한 공용 상수
+    private let panelWidth: CGFloat = 400
+
     private var overlayWindow: NSWindow?
     private var inputPanel: NSPanel?
-    private var inputHostingView: NSHostingView<FloatingInputView>?
     private var resultPanel: NSPanel?
     
     private var resultViewModel = ResultViewModel()
@@ -197,17 +201,22 @@ class CaptureWindowManager {
     func showInputPanel() {
             DispatchQueue.main.async {
                 self.inputPanel?.close()
-                
-                let initialSize = CGSize(width: 250, height: 45)
-                let rect = self.getPanelRect(width: initialSize.width, height: initialSize.height)
+
+                // 1줄일 때와 6줄일 때의 높이를 미리 계산해둔다 (그 이후로는 스크롤 처리)
+                let minHeight = calculateInputPanelHeight(forLines: 1)
+                let maxHeight = calculateInputPanelHeight(forLines: 6)
+
+                let rect = self.getPanelRect(width: self.panelWidth, height: minHeight + 10)
                 let inputView = FloatingInputView(
-                    panelSize: initialSize,
+                    panelWidth: self.panelWidth,
+                    minHeight: minHeight,
+                    maxHeight: maxHeight,
                     onSubmit: { text in
                         self.inputPanel?.orderOut(nil)
                         self.askGemini(userPrompt: text)
                     },
-                    onResize: { [weak self] newSize in
-                        self?.resizeInputPanel(to: newSize)
+                    onHeightChange: { [weak self] newHeight in
+                        self?.resizeInputPanel(toHeight: newHeight)
                     }
                 )
                 
@@ -231,9 +240,7 @@ class CaptureWindowManager {
                 panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
                 panel.standardWindowButton(.zoomButton)?.isHidden = true
                 panel.isMovableByWindowBackground = true
-                let hostingView = NSHostingView(rootView: inputView)
-                panel.contentView = hostingView
-                self.inputHostingView = hostingView
+                panel.contentView = NSHostingView(rootView: inputView)
                 self.inputPanel = panel
                 if let parent = self.overlayWindow {
                     parent.addChildWindow(panel, ordered: .above)
@@ -242,57 +249,31 @@ class CaptureWindowManager {
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
-
-    /// 질문 입력창의 텍스트 길이에 맞춰 NSPanel 자체의 frame을 부드럽게(탄력있게) 리사이즈한다.
-    /// - 너비가 늘어날 때는 오른쪽 가장자리를 고정한 채 왼쪽으로 확장
-    /// - 높이가 늘어날 때는 윗쪽 가장자리를 고정한 채 아래로 확장
-    ///
-    /// 핵심: SwiftUI 콘텐츠(panelSize)는 애니메이션 없이 곧바로 "목표 크기"로 갱신해서
-    /// 텍스트가 항상 완성된 모습으로 미리 준비되게 하고, 실제 화면에 보이는 "슬라이드로
-    /// 늘어나는" 모션은 오직 NSPanel의 창 프레임 애니메이션(clipped된 창 경계)이 담당한다.
-    /// 이렇게 하면 애니메이션 중간의 어떤 프레임에서도 텍스트가 좁은 폭 기준으로
-    /// 다시 줄바꿈되어 사라지는 현상이 생기지 않는다.
-    private func resizeInputPanel(to newSize: CGSize) {
-        guard let panel = self.inputPanel else { return }
-        let oldFrame = panel.frame
-        guard oldFrame.size != newSize else { return }
-
-        let deltaWidth = newSize.width - oldFrame.size.width
-        let deltaHeight = newSize.height - oldFrame.size.height
-
-        var newFrame = oldFrame
-        newFrame.size = newSize
-        // 오른쪽 고정 -> 왼쪽으로 확장
-        newFrame.origin.x -= deltaWidth
-        // 위쪽 고정 -> 아래로 확장 (AppKit 좌표계는 y가 아래쪽일수록 작아짐)
-        newFrame.origin.y -= deltaHeight
-
-        // SwiftUI 콘텐츠를 즉시 목표 크기로 갱신 (텍스트 레이아웃을 미리 최종 상태로 확정)
-        self.inputHostingView?.rootView = FloatingInputView(
-            panelSize: newSize,
-            onSubmit: { text in
-                self.inputPanel?.orderOut(nil)
-                self.askGemini(userPrompt: text)
-            },
-            onResize: { [weak self] size in
-                self?.resizeInputPanel(to: size)
-            }
-        )
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.38
-            // back-ease-out 스타일 커브: 목표치를 살짝 넘겼다가 튕기듯 돌아오는 탄력있는 느낌
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.34, 1.56, 0.64, 1.0)
-            context.allowsImplicitAnimation = true
-            panel.animator().setFrame(newFrame, display: true)
-        }
-    }
     
+    // 질문창 높이가 바뀔 때 호출됨.
+    // getPanelRect가 설정된 위치(mode)에 따라 위/아래 중 어느 쪽 모서리를 고정할지
+    // 이미 계산해주므로, 여기서는 새 높이로 다시 rect를 구해서 반영만 하면 된다.
+    // - 화면 우측/좌측 "상단"(mode 2, 4): 위쪽 모서리 고정 → 아래로 늘어남
+    // - 화면 우측/좌측 "하단"(mode 3, 5): 아래쪽 모서리 고정 → 위로 늘어남
+    private func resizeInputPanel(toHeight newHeight: CGFloat) {
+        guard let panel = self.inputPanel else { return }
+        let newRect = self.getPanelRect(width: self.panelWidth, height: newHeight)
+        if abs(panel.frame.height - newRect.height) < 0.5 && abs(panel.frame.origin.y - newRect.origin.y) < 0.5 {
+            return
+        }
+        // 상단 고정 위치(모드 2, 4)는 높이가 늘어날 때 위치(y)와 크기가 동시에 바뀌는데,
+        // CATransaction으로 암묵적 레이어 애니메이션을 꺼서 이 변화가 한 번에 반영되도록 함.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        panel.setFrame(newRect, display: true, animate: false)
+        CATransaction.commit()
+    }
+
     func showResultPopup() {
             DispatchQueue.main.async {
                 self.hide()
                 if self.resultPanel == nil {
-                    let rect = self.getPanelRect(width: 400, height: 640)
+                    let rect = self.getPanelRect(width: self.panelWidth, height: 640)
                     let resultView = ResultView(viewModel: self.resultViewModel) {
                         self.resultPanel?.orderOut(nil)
                         self.resultPanel = nil
@@ -384,7 +365,7 @@ class CaptureWindowManager {
             request.addValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-            // 비동기 Task로 서버 응답을 실시간으로 한 줄씩 읽어옴
+            // 비동기 Task로 서버 응답을 실시간으로 한 줄씩 읽어오rl
             Task {
                 do {
                     let (bytes, _) = try await URLSession.shared.bytes(for: request)

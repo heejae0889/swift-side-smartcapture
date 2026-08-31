@@ -61,8 +61,52 @@ struct MathWebView: NSViewRepresentable {
             <script>
                 async function updateContent(base64Str) {
                     const res = await fetch('data:text/plain;base64,' + base64Str);
-                    const rawText = await res.text();
-                    document.getElementById('content').innerHTML = marked.parse(rawText);
+                    let rawText = await res.text();
+                    
+                    // --- 스트리밍 중 열려있는 수식 임시로 닫아주기 ---
+                    let openDisplay = false;
+                    let openInline = false;
+                    for (let i = 0; i < rawText.length; i++) {
+                        if (rawText.substring(i, i+2) === '$$') {
+                            if (!openInline) {
+                                openDisplay = !openDisplay;
+                                i++; // 다음 $ 기호 건너뛰기
+                            }
+                        } else if (rawText[i] === '$') {
+                            if (!openDisplay) {
+                                openInline = !openInline;
+                            }
+                        }
+                    }
+                    
+                    if (openDisplay) rawText += '$$';
+                    else if (openInline) rawText += '$';
+                    // --------------------------------------------------------
+                    
+                    let mathBlocks = [];
+                    
+                    // 🚨 백슬래시 2개(\\)로 수정된 부분
+                    rawText = rawText.replace(/\\$\\$([\\s\\S]*?)\\$\\$/g, function(match) {
+                        mathBlocks.push(match);
+                        return 'MATHBLOCK' + (mathBlocks.length - 1) + 'ENDMATH';
+                    });
+                    
+                    rawText = rawText.replace(/\\$([^$]*?)\\$/g, function(match) {
+                        mathBlocks.push(match);
+                        return 'MATHINLINE' + (mathBlocks.length - 1) + 'ENDMATH';
+                    });
+                    
+                    let parsedHtml = marked.parse(rawText);
+                    
+                    // 🚨 여기도 백슬래시 2개(\\)로 수정!
+                    parsedHtml = parsedHtml.replace(/MATHBLOCK(\\d+)ENDMATH/g, function(match, index) {
+                        return mathBlocks[index];
+                    });
+                    parsedHtml = parsedHtml.replace(/MATHINLINE(\\d+)ENDMATH/g, function(match, index) {
+                        return mathBlocks[index];
+                    });
+                    
+                    document.getElementById('content').innerHTML = parsedHtml;
                     renderMathInElement(document.getElementById('content'), {
                         delimiters: [
                             {left: '$$', right: '$$', display: true},
