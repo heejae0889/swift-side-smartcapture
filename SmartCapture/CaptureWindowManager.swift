@@ -357,7 +357,10 @@ class CaptureWindowManager {
                         ["text": systemInstruction],
                         ["inline_data": ["mime_type": "image/png", "data": base64Image]]
                     ]
-                ]]
+                ]],
+                "generationConfig": [
+                    "thinkingConfig": ["thinkingLevel": "low"]
+                ]
             ]
             
             var request = URLRequest(url: url)
