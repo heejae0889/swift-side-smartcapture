@@ -59,6 +59,16 @@ struct MathWebView: NSViewRepresentable {
         <body>
             <div id="content"></div>
             <script>
+                // 수식 블록 안에 이스케이프 안 된 TeX 특수문자(&, %, #)가 있으면
+                // KaTeX가 파싱 에러를 내면서 원본 텍스트를 그대로(빨간색으로) 뿜어냄.
+                // 렌더링 직전에 자동으로 이스케이프 처리해서 이런 에러를 예방함.
+                function sanitizeMath(mathStr) {
+                    return mathStr
+                        .replace(/(?<!\\\\)&/g, '\\\\&')
+                        .replace(/(?<!\\\\)%/g, '\\\\%')
+                        .replace(/(?<!\\\\)#/g, '\\\\#');
+                }
+
                 async function updateContent(base64Str) {
                     const res = await fetch('data:text/plain;base64,' + base64Str);
                     let rawText = await res.text();
@@ -87,12 +97,12 @@ struct MathWebView: NSViewRepresentable {
                     
                     // 🚨 백슬래시 2개(\\)로 수정된 부분
                     rawText = rawText.replace(/\\$\\$([\\s\\S]*?)\\$\\$/g, function(match) {
-                        mathBlocks.push(match);
+                        mathBlocks.push(sanitizeMath(match));
                         return 'MATHBLOCK' + (mathBlocks.length - 1) + 'ENDMATH';
                     });
                     
                     rawText = rawText.replace(/\\$([^$]*?)\\$/g, function(match) {
-                        mathBlocks.push(match);
+                        mathBlocks.push(sanitizeMath(match));
                         return 'MATHINLINE' + (mathBlocks.length - 1) + 'ENDMATH';
                     });
                     
