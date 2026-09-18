@@ -4,8 +4,34 @@ import Combine
 import MarkdownUI
 
 class ResultViewModel: ObservableObject {
-    @Published var answer: String = ""
+    @Published var priorTranscript: String = ""   // 이전에 완료된 턴들의 질문/답변 기록
+    @Published var currentQuestion: String = ""    // 지금 진행 중인 턴의 질문 (후속 질문일 때만 표시, 최초 질문은 기존처럼 숨김)
+    @Published var currentAnswer: String = ""      // 지금 진행 중인 턴의 답변(스트리밍 버퍼) / 로딩 문구
     @Published var isLoading: Bool = false
+    // isLoading은 첫 글자가 도착하는 순간 false가 되므로, 답변이 실시간으로 나오는 중에는
+    // 이어 질문을 막을 수 없음. 요청 시작부터 스트리밍 완료까지 전 구간을 덮는 별도 플래그.
+    @Published var isStreaming: Bool = false
+
+    // MathWebView에 실제로 넘길 전체 텍스트 (완료된 기록 + 진행 중인 턴)
+    // [[TURN_START]]는 후속 질문이 시작되는 지점을 표시하는 마커. WebView가 이 위치로 스크롤함.
+    // [[Q]]...[[/Q]]는 사용자 질문 영역 표시. WebView에서 굵고 크게 스타일링됨.
+    // (HTML 태그가 아니라 평범한 텍스트 토큰이어야 함 - AI 답변 속 HTML을 전부 이스케이프하면서도
+    //  이 마커만은 살려두기 위해서. 예전처럼 <div>를 쓰면 AI가 <script>를 출력했을 때 막을 방법이 없음)
+    var displayText: String {
+        if currentQuestion.isEmpty {
+            return priorTranscript + currentAnswer
+        } else {
+            return priorTranscript + "\n\n[[TURN_START]]\n\n---\n\n[[Q]]\(currentQuestion)[[/Q]]\n\n" + currentAnswer
+        }
+    }
+
+    // 클립보드 복사용: 내부 마커를 제거한 깨끗한 텍스트
+    var plainTextForCopy: String {
+        return displayText
+            .replacingOccurrences(of: "[[TURN_START]]", with: "")
+            .replacingOccurrences(of: "[[Q]]", with: "Q. ")
+            .replacingOccurrences(of: "[[/Q]]", with: "")
+    }
 }
 
 struct ContentView: View {
@@ -178,6 +204,8 @@ struct GrowingTextView: NSViewRepresentable {
     @Binding var dynamicHeight: CGFloat
     var minHeight: CGFloat
     var maxHeight: CGFloat
+    var autoFocus: Bool = true   // 캡쳐 직후 질문창은 바로 입력 가능해야 하지만, 결과창의 이어 질문란은 포커스를 뺏으면 안 됨
+    var isEnabled: Bool = true   // 답변 생성 중에는 입력을 막기 위함
     var onSubmit: () -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -195,6 +223,8 @@ struct GrowingTextView: NSViewRepresentable {
         textView.string = text
         textView.textColor = .labelColor
         textView.typingAttributes = [.font: inputFieldFont, .foregroundColor: NSColor.labelColor]
+        textView.isEditable = isEnabled
+        textView.isSelectable = true
 
         let scrollView = NSScrollView()
         scrollView.documentView = textView
@@ -208,8 +238,10 @@ struct GrowingTextView: NSViewRepresentable {
         context.coordinator.scrollView = scrollView
 
         // 창이 뜨자마자 바로 타이핑할 수 있도록 포커스 이동
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            textView.window?.makeFirstResponder(textView)
+        if autoFocus {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                textView.window?.makeFirstResponder(textView)
+            }
         }
 
         DispatchQueue.main.async {
@@ -220,6 +252,10 @@ struct GrowingTextView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
+        // 코디네이터가 들고 있는 parent를 최신 값으로 갱신하지 않으면
+        // 높이 재계산이 생성 시점의 오래된 값(minHeight/maxHeight 등)으로 이뤄짐
+        context.coordinator.parent = self
+
         guard let textView = context.coordinator.textView else { return }
         if textView.string != text {
             textView.string = text
@@ -228,6 +264,9 @@ struct GrowingTextView: NSViewRepresentable {
                 storage.addAttribute(.font, value: inputFieldFont, range: NSRange(location: 0, length: storage.length))
                 storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: NSRange(location: 0, length: storage.length))
             }
+        }
+        if textView.isEditable != isEnabled {
+            textView.isEditable = isEnabled
         }
         context.coordinator.recalculateHeight()
     }
@@ -359,7 +398,14 @@ struct FloatingInputView: View {
 
 struct ResultView: View {
     @ObservedObject var viewModel: ResultViewModel
+    @State private var followUpText: String = ""
+    @State private var followUpHeight: CGFloat = calculateInputPanelHeight(forLines: 1)
     var onDismiss: () -> Void
+    var onAskFollowUp: (String) -> Void
+
+    // 처음 질문창과 동일한 기준: 1줄에서 시작해 6줄까지 늘어나고, 그 이후로는 스크롤
+    private var followUpMinHeight: CGFloat { calculateInputPanelHeight(forLines: 1) }
+    private var followUpMaxHeight: CGFloat { calculateInputPanelHeight(forLines: 6) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -377,18 +423,21 @@ struct ResultView: View {
             }
             
             Divider()
-            if viewModel.isLoading {
+            // 최초 질문(보여줄 내용이 아직 없음)일 때만 스피너로 전체를 대체하고,
+            // 후속 질문일 때는 이전 대화를 그대로 유지한 채 하단에 "분석 중..."이 붙도록 함.
+            // (여기서 뷰를 통째로 교체하면 WebView가 새로 만들어지면서 스크롤 위치도 초기화됨)
+            if viewModel.isLoading && viewModel.priorTranscript.isEmpty {
                 VStack {
                     HStack(spacing: 10) {
                         ProgressView().scaleEffect(0.8)
-                        Text(viewModel.answer)
+                        Text(viewModel.currentAnswer)
                             .foregroundColor(.secondary)
                             .font(.system(.body, design: .rounded))
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else {
-                MathWebView(text: viewModel.answer)
+                MathWebView(text: viewModel.displayText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             
@@ -397,10 +446,44 @@ struct ResultView: View {
                     Spacer()
                     Button("복사하기") {
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(viewModel.answer, forType: .string)
+                        NSPasteboard.general.setString(viewModel.plainTextForCopy, forType: .string)
                     }
                     .controlSize(.small)
                 }
+            }
+
+            Divider()
+            HStack(alignment: .bottom, spacing: 6) {
+                ZStack(alignment: .topLeading) {
+                    if followUpText.isEmpty {
+                        Text(viewModel.isStreaming ? "답변을 생성하는 중입니다..." : "이어서 질문하기...")
+                            .font(.system(size: 14))
+                            .foregroundColor(.gray.opacity(0.7))
+                            .padding(.leading, 9)
+                            .padding(.top, 6)
+                            .allowsHitTesting(false)
+                    }
+                    GrowingTextView(
+                        text: $followUpText,
+                        dynamicHeight: $followUpHeight,
+                        minHeight: followUpMinHeight,
+                        maxHeight: followUpMaxHeight,
+                        autoFocus: false,          // 결과창이 뜰 때 포커스를 뺏지 않도록
+                        isEnabled: !viewModel.isStreaming
+                    ) {
+                        submitFollowUp()
+                    }
+                }
+                .frame(height: followUpHeight)
+                .background(Color(NSColor.textBackgroundColor).opacity(0.6))
+                .cornerRadius(6)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.4)))
+
+                Button("전송") {
+                    submitFollowUp()
+                }
+                .controlSize(.small)
+                .disabled(viewModel.isStreaming || followUpText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding()
@@ -408,6 +491,15 @@ struct ResultView: View {
         .background(VisualEffectView().clipShape(RoundedRectangle(cornerRadius: 15)))
         .overlay(RoundedRectangle(cornerRadius: 15).stroke(Color.gray.opacity(0.2)))
         .edgesIgnoringSafeArea(.all)
+    }
+
+    private func submitFollowUp() {
+        guard !viewModel.isStreaming else { return }
+        let text = followUpText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        followUpText = ""
+        followUpHeight = followUpMinHeight // 전송 후 입력창을 다시 1줄 높이로 되돌림
+        onAskFollowUp(text)
     }
 }
 
