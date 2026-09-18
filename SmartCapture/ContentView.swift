@@ -238,6 +238,7 @@ struct GrowingTextView: NSViewRepresentable {
     var maxHeight: CGFloat
     var autoFocus: Bool = true   // 캡쳐 직후 질문창은 바로 입력 가능해야 하지만, 결과창의 이어 질문란은 포커스를 뺏으면 안 됨
     var isEnabled: Bool = true   // 답변 생성 중에는 입력을 막기 위함
+    var tabSuggestion: String = "" // 빈 상태에서 탭을 누르면 채워질 추천 질문
     var onSubmit: () -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -344,6 +345,22 @@ struct GrowingTextView: NSViewRepresentable {
                 }
                 return true
             }
+
+            // 아무것도 입력하지 않은 상태에서 탭을 누르면 추천 질문을 그대로 채워넣음.
+            // 입력 중이거나 추천이 없으면 false를 반환해 기본 탭 동작(포커스 이동)을 유지.
+            if commandSelector == #selector(NSResponder.insertTab(_:)) {
+                let suggestion = parent.tabSuggestion
+                guard textView.string.isEmpty, !suggestion.isEmpty else { return false }
+
+                textView.string = suggestion
+                parent.text = suggestion
+                enforceFont(on: textView)
+                // 커서를 맨 뒤로 보내 바로 이어서 수정할 수 있게 함
+                textView.setSelectedRange(NSRange(location: (suggestion as NSString).length, length: 0))
+                recalculateHeight()
+                return true
+            }
+
             return false
         }
 
@@ -443,7 +460,10 @@ struct ResultView: View {
     // 추천 질문이 있으면 그걸 힌트로 보여주고, 없으면 기본 문구
     private var placeholderText: String {
         if viewModel.isStreaming { return "답변을 생성하는 중입니다..." }
-        if !viewModel.suggestedQuestion.isEmpty { return viewModel.suggestedQuestion }
+        if !viewModel.suggestedQuestion.isEmpty {
+            // 탭으로 채울 수 있다는 것을 알 방법이 없으므로 안내를 덧붙임
+            return "\(viewModel.suggestedQuestion)"
+        }
         return "이어서 질문하기..."
     }
 
@@ -537,7 +557,8 @@ struct ResultView: View {
                         minHeight: followUpMinHeight,
                         maxHeight: followUpMaxHeight,
                         autoFocus: false,          // 결과창이 뜰 때 포커스를 뺏지 않도록
-                        isEnabled: !viewModel.isStreaming
+                        isEnabled: !viewModel.isStreaming,
+                        tabSuggestion: viewModel.suggestedQuestion
                     ) {
                         submitFollowUp()
                     }
