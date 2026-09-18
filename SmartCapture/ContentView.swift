@@ -400,6 +400,7 @@ struct ResultView: View {
     @ObservedObject var viewModel: ResultViewModel
     @State private var followUpText: String = ""
     @State private var followUpHeight: CGFloat = calculateInputPanelHeight(forLines: 1)
+    @State private var didCopy: Bool = false
     var onDismiss: () -> Void
     var onAskFollowUp: (String) -> Void
 
@@ -408,7 +409,10 @@ struct ResultView: View {
     private var followUpMaxHeight: CGFloat { calculateInputPanelHeight(forLines: 6) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        // 간격을 0으로 두고 각 요소에 필요한 여백만 직접 지정.
+        // (기본 간격에 음수 여백을 더해 조정하면 구분선이 답변 영역을 덮어써서
+        //  본문이 복사 버튼 위로 겹쳐 보이는 문제가 생김)
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Label("AI 분석 결과", systemImage: "sparkles")
                     .font(.headline)
@@ -421,8 +425,10 @@ struct ResultView: View {
                 }
                 .buttonStyle(.plain)
             }
-            
+            .padding(.bottom, 12)
+
             Divider()
+                .padding(.bottom, 12)
             // 최초 질문(보여줄 내용이 아직 없음)일 때만 스피너로 전체를 대체하고,
             // 후속 질문일 때는 이전 대화를 그대로 유지한 채 하단에 "분석 중..."이 붙도록 함.
             // (여기서 뷰를 통째로 교체하면 WebView가 새로 만들어지면서 스크롤 위치도 초기화됨)
@@ -439,20 +445,43 @@ struct ResultView: View {
             } else {
                 MathWebView(text: viewModel.displayText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            
-            if !viewModel.isLoading {
-                HStack {
-                    Spacer()
-                    Button("복사하기") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(viewModel.plainTextForCopy, forType: .string)
+                    // 복사 버튼을 별도 행으로 두면 그만큼 답변 영역이 줄어들고 회색 배경도 눈에 띄므로,
+                    // 배경 없는 버튼을 답변 영역 위에 겹쳐서 표시함
+                    .overlay(alignment: .bottomTrailing) {
+                        if !viewModel.isLoading {
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(viewModel.plainTextForCopy, forType: .string)
+                                // 체크 아이콘이 살짝 튕기듯 나타나도록 스프링 적용
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { didCopy = true }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                    withAnimation(.easeOut(duration: 0.2)) { didCopy = false }
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
+                                        .scaleEffect(didCopy ? 1.15 : 1.0)
+                                    Text(didCopy ? "복사됨" : "복사하기")
+                                }
+                                .font(.caption)
+                                .foregroundColor(didCopy ? .green : .secondary)
+                                // 두 문구의 너비가 달라 버튼이 덜컥거리는 것을 막기 위해 최소 너비 고정
+                                .frame(minWidth: 62, alignment: .trailing)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                            }
+                            .buttonStyle(.plain)
+                            .help("답변 전체를 클립보드에 복사")
+                            .padding(.trailing, 4)
+                            .padding(.bottom, 2)
+                        }
                     }
-                    .controlSize(.small)
-                }
             }
 
+            // 답변 영역은 구분선까지 꽉 차게(위 여백 0), 구분선과 입력창 사이는
+            // 아래쪽 컨테이너 여백(16)과 같은 값을 줘서 입력창 위아래 공백을 맞춤
             Divider()
+                .padding(.bottom, 16)
             HStack(alignment: .bottom, spacing: 6) {
                 ZStack(alignment: .topLeading) {
                     if followUpText.isEmpty {
@@ -486,7 +515,7 @@ struct ResultView: View {
                 .disabled(viewModel.isStreaming || followUpText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding()
+        .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(VisualEffectView().clipShape(RoundedRectangle(cornerRadius: 15)))
         .overlay(RoundedRectangle(cornerRadius: 15).stroke(Color.gray.opacity(0.2)))
