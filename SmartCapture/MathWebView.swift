@@ -131,10 +131,6 @@ struct MathWebView: NSViewRepresentable {
                     autoFollow = isNearBottom();
                 }, { passive: true });
 
-                // 스크롤 가능한 최대 위치.
-                // scrollHeight는 "문서 전체 높이"라서 그대로 목표로 쓰면 절대 도달할 수 없는 지점이 됨.
-                // 그러면 남은 거리가 항상 화면 높이만큼 남아있어서 속도가 폭발 -> 첫 프레임에
-                // 맨 아래로 순간이동("빡") 해버리고, 애니메이션 루프도 영원히 안 끝남.
                 function maxScroll() {
                     return Math.max(0, document.body.scrollHeight - window.innerHeight);
                 }

@@ -101,6 +101,7 @@ class CaptureWindowManager {
         self.resultViewModel.priorTranscript = ""
         self.resultViewModel.currentQuestion = ""
         self.resultViewModel.currentAnswer = ""
+        self.resultViewModel.suggestedQuestion = ""
         self.resultViewModel.isStreaming = false
     }
     func showSettings() {
@@ -258,6 +259,7 @@ class CaptureWindowManager {
                     self.resultViewModel.priorTranscript = ""
                     self.resultViewModel.currentQuestion = ""
                     self.resultViewModel.currentAnswer = ""
+                    self.resultViewModel.suggestedQuestion = ""
                     self.resultViewModel.isStreaming = false
                     self.resultPanel?.close()
                     self.resultPanel = nil
@@ -463,6 +465,7 @@ class CaptureWindowManager {
                 self.resultViewModel.isStreaming = true
                 self.resultViewModel.currentQuestion = isFollowUp ? userPrompt : ""
                 self.resultViewModel.currentAnswer = "분석 중..."
+                self.resultViewModel.suggestedQuestion = ""
                 self.showResultPopup()
             }
 
@@ -485,6 +488,12 @@ class CaptureWindowManager {
             7. 수식은 반드시 KaTeX 라이브러리에서 완벽하게 지원하는 기본 문법만 사용해.
             8. \\begin{align} 대신 반드시 \\begin{aligned}를 사용해.
             9. 괄호를 열었으면 반드시 닫고, 수식 블록($ 또는 $$)의 짝을 완벽하게 맞춰서 출력해.
+            10. [매우 중요] 답변을 모두 마친 뒤, 맨 마지막 줄에 사용자가 이어서 궁금해할 만한
+                질문 하나를 반드시 아래 형식으로 딱 한 번만 출력해.
+                형식: [[NEXT]]질문 내용[[/NEXT]]
+                - 20자 내외의 한국어 한 문장으로 자연스럽게 써.
+                - 이 줄은 사용자에게 보이지 않으니, 답변 본문에서 이 줄을 언급하지 마.
+                - 답변 본문 중간에는 절대 쓰지 말고 오직 맨 마지막 줄에만 써.
             """
 
             // 이번 턴의 사용자 파트: 최초 질문에만 이미지를 포함, 후속 질문은 텍스트만
@@ -587,16 +596,23 @@ class CaptureWindowManager {
                         // (창을 닫거나 새로 캡쳐한 뒤 뒤늦게 도착한 응답이 새 대화에 섞이는 것을 방지)
                         guard self.requestGeneration == generation else { return }
 
+                        // 답변 끝에 붙은 추천 질문을 떼어내고, 본문에는 남기지 않음.
+                        // 대화 기록에도 정리된 텍스트만 넣어야 다음 요청에서 마커가 되먹임되지 않음.
+                        let suggestion = ResultViewModel.extractSuggestion(from: fullAnswerText)
+                        let cleanAnswer = ResultViewModel.stripSuggestion(fullAnswerText)
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+
                         self.conversationContents.append(newUserTurn)
-                        self.conversationContents.append(["role": "model", "parts": [["text": fullAnswerText]]])
+                        self.conversationContents.append(["role": "model", "parts": [["text": cleanAnswer]]])
 
                         if isFollowUp {
-                            self.resultViewModel.priorTranscript += "\n\n[[TURN_START]]\n\n---\n\n[[Q]]\(userPrompt)[[/Q]]\n\n\(fullAnswerText)"
+                            self.resultViewModel.priorTranscript += "\n\n[[TURN_START]]\n\n---\n\n[[Q]]\(userPrompt)[[/Q]]\n\n\(cleanAnswer)"
                         } else {
-                            self.resultViewModel.priorTranscript = fullAnswerText
+                            self.resultViewModel.priorTranscript = cleanAnswer
                         }
                         self.resultViewModel.currentQuestion = ""
                         self.resultViewModel.currentAnswer = ""
+                        self.resultViewModel.suggestedQuestion = suggestion ?? ""
                         self.resultViewModel.isLoading = false
                         self.resultViewModel.isStreaming = false // 스트리밍 끝 -> 이어 질문 다시 허용
                     }

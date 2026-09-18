@@ -11,6 +11,37 @@ class ResultViewModel: ObservableObject {
     // isLoading은 첫 글자가 도착하는 순간 false가 되므로, 답변이 실시간으로 나오는 중에는
     // 이어 질문을 막을 수 없음. 요청 시작부터 스트리밍 완료까지 전 구간을 덮는 별도 플래그.
     @Published var isStreaming: Bool = false
+    // AI가 답변 끝에 덧붙인 추천 후속 질문. 입력창 플레이스홀더로 사용됨.
+    @Published var suggestedQuestion: String = ""
+
+    static let nextMarker = "[[NEXT]]"
+    static let nextMarkerEnd = "[[/NEXT]]"
+
+    // 추천 질문 마커부터 뒤쪽을 화면에서 숨김.
+    // 스트리밍 중에는 마커가 "[[NE"처럼 일부만 도착할 수 있어, 꼬리에 걸친 조각도 함께 제거해야
+    // 토큰이 잠깐 노출되는 것을 막을 수 있음.
+    static func stripSuggestion(_ text: String) -> String {
+        if let range = text.range(of: nextMarker) {
+            return String(text[..<range.lowerBound])
+        }
+        for length in stride(from: nextMarker.count - 1, through: 1, by: -1) {
+            if text.hasSuffix(String(nextMarker.prefix(length))) {
+                return String(text.dropLast(length))
+            }
+        }
+        return text
+    }
+
+    // 완료된 답변에서 추천 질문을 추출 (없으면 nil)
+    static func extractSuggestion(from text: String) -> String? {
+        guard let start = text.range(of: nextMarker) else { return nil }
+        var tail = String(text[start.upperBound...])
+        if let end = tail.range(of: nextMarkerEnd) {
+            tail = String(tail[..<end.lowerBound])
+        }
+        let cleaned = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
+    }
 
     // MathWebView에 실제로 넘길 전체 텍스트 (완료된 기록 + 진행 중인 턴)
     // [[TURN_START]]는 후속 질문이 시작되는 지점을 표시하는 마커. WebView가 이 위치로 스크롤함.
@@ -18,10 +49,11 @@ class ResultViewModel: ObservableObject {
     // (HTML 태그가 아니라 평범한 텍스트 토큰이어야 함 - AI 답변 속 HTML을 전부 이스케이프하면서도
     //  이 마커만은 살려두기 위해서. 예전처럼 <div>를 쓰면 AI가 <script>를 출력했을 때 막을 방법이 없음)
     var displayText: String {
+        let answer = ResultViewModel.stripSuggestion(currentAnswer)
         if currentQuestion.isEmpty {
-            return priorTranscript + currentAnswer
+            return priorTranscript + answer
         } else {
-            return priorTranscript + "\n\n[[TURN_START]]\n\n---\n\n[[Q]]\(currentQuestion)[[/Q]]\n\n" + currentAnswer
+            return priorTranscript + "\n\n[[TURN_START]]\n\n---\n\n[[Q]]\(currentQuestion)[[/Q]]\n\n" + answer
         }
     }
 
@@ -408,6 +440,13 @@ struct ResultView: View {
     private var followUpMinHeight: CGFloat { calculateInputPanelHeight(forLines: 1) }
     private var followUpMaxHeight: CGFloat { calculateInputPanelHeight(forLines: 6) }
 
+    // 추천 질문이 있으면 그걸 힌트로 보여주고, 없으면 기본 문구
+    private var placeholderText: String {
+        if viewModel.isStreaming { return "답변을 생성하는 중입니다..." }
+        if !viewModel.suggestedQuestion.isEmpty { return viewModel.suggestedQuestion }
+        return "이어서 질문하기..."
+    }
+
     var body: some View {
         // 간격을 0으로 두고 각 요소에 필요한 여백만 직접 지정.
         // (기본 간격에 음수 여백을 더해 조정하면 구분선이 답변 영역을 덮어써서
@@ -485,7 +524,7 @@ struct ResultView: View {
             HStack(alignment: .bottom, spacing: 6) {
                 ZStack(alignment: .topLeading) {
                     if followUpText.isEmpty {
-                        Text(viewModel.isStreaming ? "답변을 생성하는 중입니다..." : "이어서 질문하기...")
+                        Text(placeholderText)
                             .font(.system(size: 14))
                             .foregroundColor(.gray.opacity(0.7))
                             .padding(.leading, 9)
