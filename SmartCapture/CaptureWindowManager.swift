@@ -591,7 +591,7 @@ class CaptureWindowManager {
                         self.conversationContents.append(["role": "model", "parts": [["text": fullAnswerText]]])
 
                         if isFollowUp {
-                            self.resultViewModel.priorTranscript += "\n\n[[TURN_START]]\n\n---\n\n**Q.** \(userPrompt)\n\n\(fullAnswerText)"
+                            self.resultViewModel.priorTranscript += "\n\n[[TURN_START]]\n\n---\n\n[[Q]]\(userPrompt)[[/Q]]\n\n\(fullAnswerText)"
                         } else {
                             self.resultViewModel.priorTranscript = fullAnswerText
                         }
