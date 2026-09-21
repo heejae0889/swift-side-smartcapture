@@ -7,13 +7,19 @@ struct GeminiResponse: Codable, Sendable {
     struct Candidate: Codable, Sendable {
         struct Content: Codable, Sendable {
             struct Part: Codable, Sendable {
-                let text: String
+                // 텍스트가 없는 part(생각 서명 등)도 올 수 있으므로 optional.
+                // 필수로 두면 해당 청크 전체의 디코딩이 실패해 조용히 버려짐.
+                let text: String?
+                let thought: Bool?
             }
-            let parts: [Part]
+            let parts: [Part]?
         }
-        let content: Content
+        // 응답이 끝나는 마지막 청크에는 보통 content 없이 finishReason만 담겨 옴.
+        // 여기를 필수로 두면 "토큰 한도로 잘렸다"는 신호를 영영 받을 수 없음.
+        let content: Content?
+        let finishReason: String?
     }
-    let candidates: [Candidate]
+    let candidates: [Candidate]?
 }
 
 class OverlayWindow: NSWindow {
@@ -510,10 +516,12 @@ class CaptureWindowManager {
                 "system_instruction": ["parts": [["text": systemInstruction]]],
                 "contents": requestContents,
                 // thinkingLevel을 minimal로 낮춰서 답변 시작 전 "생각하는" 시간을 최대한 줄임 (체감 속도 개선의 핵심)
-                // + maxOutputTokens로 답변 길이를 적당히 제한해 스트리밍이 끝까지 도착하는 총 시간도 단축
+                // maxOutputTokens는 일부러 지정하지 않음 (모델이 허용하는 최대치까지 답변).
+                // 스트리밍 방식에서는 한도가 첫 글자가 뜨는 속도에 영향을 주지 않아 속도 이득이 없고,
+                // 오히려 긴 한국어 답변이 문장 중간에서 잘리는 문제만 일으켰음.
+                // (그래도 잘리는 경우를 대비해 finishReason == "MAX_TOKENS" 감지 로직은 유지)
                 "generationConfig": [
-                    "thinkingConfig": ["thinkingLevel": "minimal"],
-                    "maxOutputTokens": 2048
+                    "thinkingConfig": ["thinkingLevel": "minimal"]
                 ]
             ]
             
@@ -547,6 +555,8 @@ class CaptureWindowManager {
 
                     var isFirstChunk = true
                     var fullAnswerText = ""
+                    // 응답이 끝난 이유. "STOP"이면 정상 종료, "MAX_TOKENS"면 한도에 걸려 잘린 것.
+                    var finishReason: String?
 
                     for try await line in bytes.lines {
                         // 창이 닫혔거나 새 캡쳐가 시작된 경우 즉시 중단
@@ -554,28 +564,39 @@ class CaptureWindowManager {
 
                         guard line.hasPrefix("data: ") else { continue }
                         let jsonString = line.dropFirst(6)
-                        guard let data = jsonString.data(using: .utf8) else { continue }
-                        
-                        if let decoded = try? JSONDecoder().decode(GeminiResponse.self, from: data),
-                           let textChunk = decoded.candidates.first?.content.parts.first?.text {
-                            
-                            fullAnswerText += textChunk
+                        guard let data = jsonString.data(using: .utf8),
+                              let decoded = try? JSONDecoder().decode(GeminiResponse.self, from: data),
+                              let candidate = decoded.candidates?.first else { continue }
 
-                            // 이 요청이 아직 유효한 경우에만 화면에 반영.
-                            // 무효해졌다면(false) 루프를 빠져나가 남은 응답을 버림.
-                            let shouldClearPlaceholder = isFirstChunk
-                            let stillCurrent = await MainActor.run { () -> Bool in
-                                guard self.requestGeneration == generation else { return false }
-                                if shouldClearPlaceholder {
-                                    self.resultViewModel.currentAnswer = ""
-                                    self.resultViewModel.isLoading = false
-                                }
-                                self.resultViewModel.currentAnswer += textChunk
-                                return true
-                            }
-                            if !stillCurrent { return }
-                            isFirstChunk = false
+                        // 마지막 청크에 담겨 오는 종료 사유를 기록 (텍스트가 없어도 반드시 확인)
+                        if let reason = candidate.finishReason {
+                            finishReason = reason
                         }
+
+                        // 첫 part만 읽으면 여러 part로 나뉘어 온 텍스트가 누락됨.
+                        // 생각(thought) part는 답변이 아니므로 제외하고 나머지를 모두 이어붙임.
+                        let textChunk = (candidate.content?.parts ?? [])
+                            .filter { $0.thought != true }
+                            .compactMap { $0.text }
+                            .joined()
+                        guard !textChunk.isEmpty else { continue }
+
+                        fullAnswerText += textChunk
+
+                        // 이 요청이 아직 유효한 경우에만 화면에 반영.
+                        // 무효해졌다면(false) 루프를 빠져나가 남은 응답을 버림.
+                        let shouldClearPlaceholder = isFirstChunk
+                        let stillCurrent = await MainActor.run { () -> Bool in
+                            guard self.requestGeneration == generation else { return false }
+                            if shouldClearPlaceholder {
+                                self.resultViewModel.currentAnswer = ""
+                                self.resultViewModel.isLoading = false
+                            }
+                            self.resultViewModel.currentAnswer += textChunk
+                            return true
+                        }
+                        if !stillCurrent { return }
+                        isFirstChunk = false
                     }
 
                     if Task.isCancelled { return }
@@ -598,12 +619,26 @@ class CaptureWindowManager {
 
                         // 답변 끝에 붙은 추천 질문을 떼어내고, 본문에는 남기지 않음.
                         // 대화 기록에도 정리된 텍스트만 넣어야 다음 요청에서 마커가 되먹임되지 않음.
-                        let suggestion = ResultViewModel.extractSuggestion(from: fullAnswerText)
-                        let cleanAnswer = ResultViewModel.stripSuggestion(fullAnswerText)
+                        var suggestion = ResultViewModel.extractSuggestion(from: fullAnswerText)
+                        var cleanAnswer = ResultViewModel.stripSuggestion(fullAnswerText)
                             .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                        // 토큰 한도에 걸려 잘린 경우: 사용자가 알 수 있게 안내를 붙이고,
+                        // 추천 질문 마커도 끝까지 도달하지 못했으므로 "이어서 설명해줘"를 추천으로 제공
+                        // (탭 한 번으로 바로 이어받을 수 있도록)
+                        let wasTruncated = (finishReason == "MAX_TOKENS")
+                        if wasTruncated {
+                            suggestion = "이어서 설명해줘"
+                        }
 
                         self.conversationContents.append(newUserTurn)
                         self.conversationContents.append(["role": "model", "parts": [["text": cleanAnswer]]])
+
+                        // 안내 문구는 화면에만 붙이고, 대화 기록(conversationContents)에는 넣지 않음.
+                        // 넣으면 모델이 다음 답변에서 이 문구를 자기 답변의 일부로 착각할 수 있음.
+                        if wasTruncated {
+                            cleanAnswer += "\n\n---\n\n> ⚠️ 답변이 길어 중간에 잘렸습니다. 입력창에서 **Tab**을 누르고 전송하면 이어서 받아볼 수 있어요."
+                        }
 
                         if isFollowUp {
                             self.resultViewModel.priorTranscript += "\n\n[[TURN_START]]\n\n---\n\n[[Q]]\(userPrompt)[[/Q]]\n\n\(cleanAnswer)"
