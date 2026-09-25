@@ -192,23 +192,30 @@ struct MathWebView: NSViewRepresentable {
                     let rawText = await res.text();
                     
                     // --- 스트리밍 중 열려있는 수식 임시로 닫아주기 ---
+                    // 주의: 무조건 닫아버리면, 모델이 본문 중간에 짝 없는 $ 를 하나 흘렸을 때
+                    // 거기서부터 문서 끝까지가 통째로 수식으로 인식되어 답변 전체가 깨짐.
+                    // 그래서 "열린 위치가 글 끝부분일 때"(= 아직 스트리밍 중일 가능성이 높을 때)만 닫는다.
                     let openDisplay = false;
                     let openInline = false;
+                    let openIndex = -1;
                     for (let i = 0; i < rawText.length; i++) {
                         if (rawText.substring(i, i+2) === '$$') {
                             if (!openInline) {
                                 openDisplay = !openDisplay;
+                                openIndex = openDisplay ? i : -1;
                                 i++; // 다음 $ 기호 건너뛰기
                             }
                         } else if (rawText[i] === '$') {
                             if (!openDisplay) {
                                 openInline = !openInline;
+                                openIndex = openInline ? i : -1;
                             }
                         }
                     }
-                    
-                    if (openDisplay) rawText += '$$';
-                    else if (openInline) rawText += '$';
+
+                    const openedNearEnd = openIndex >= 0 && (rawText.length - openIndex) <= 400;
+                    if (openDisplay && openedNearEnd) rawText += '$$';
+                    else if (openInline && openedNearEnd) rawText += '$';
                     // --------------------------------------------------------
                     
                     let mathBlocks = [];
@@ -222,7 +229,9 @@ struct MathWebView: NSViewRepresentable {
                         return 'MATHBLOCK' + (mathBlocks.length - 1) + 'ENDMATH';
                     });
                     
-                    rawText = rawText.replace(/\\$([^$]*?)\\$/g, function(match) {
+                    // 인라인 수식은 줄바꿈을 넘지 못하게 제한.
+                    // ([^$]*? 로 두면 짝 없는 $ 하나가 여러 문단을 통째로 삼켜버림)
+                    rawText = rawText.replace(/\\$([^$\\n]+?)\\$/g, function(match) {
                         mathBlocks.push(escapeHtml(sanitizeMath(match)));
                         return 'MATHINLINE' + (mathBlocks.length - 1) + 'ENDMATH';
                     });
@@ -233,7 +242,23 @@ struct MathWebView: NSViewRepresentable {
                     // 이스케이프되어 화면에 "&lt;" 라는 글자가 그대로 보이게 됨.
                     // 대신 아래 marked 설정에서 raw HTML 토큰만 골라서 무력화함.
                     
+                    // 수식을 자리표시자로 빼낸 뒤, 마크다운 볼드 예외 처리.
+                    //
+                    // 마크다운 표준(CommonMark)에서는 닫는 ** 앞이 구두점이고 바로 뒤가 문자면
+                    // 닫기로 인정하지 않음. 한국어는 "**보호 권한(Permission)**에" 처럼
+                    // 괄호로 끝나고 조사가 바로 붙는 경우가 흔해서 별표가 그대로 노출됨.
+                    // 이 경우만 골라 미리 빼두었다가 파싱 후 <strong>으로 복원한다.
+                    let boldBlocks = [];
+                    rawText = rawText.replace(/\\*\\*([^\\n*]*[\\p{P}\\p{S}])\\*\\*(?=[^\\s\\p{P}\\p{S}])/gu, function(match, inner) {
+                        boldBlocks.push(escapeHtml(inner));
+                        return 'BOLDMARK' + (boldBlocks.length - 1) + 'ENDBOLD';
+                    });
+
                     let parsedHtml = marked.parse(rawText);
+
+                    parsedHtml = parsedHtml.replace(/BOLDMARK(\\d+)ENDBOLD/g, function(match, index) {
+                        return '<strong>' + boldBlocks[index] + '</strong>';
+                    });
                     
                     // 🚨 여기도 백슬래시 2개(\\)로 수정!
                     parsedHtml = parsedHtml.replace(/MATHBLOCK(\\d+)ENDMATH/g, function(match, index) {
