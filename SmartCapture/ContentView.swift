@@ -32,15 +32,42 @@ class ResultViewModel: ObservableObject {
         return text
     }
 
-    // 완료된 답변에서 추천 질문을 추출 (없으면 nil)
+    // 완료된 답변에서 추천 질문을 추출 (없거나 형식이 이상하면 nil)
+    //
+    // 모델이 규칙을 어기고 답변 중간에 마커를 먼저 내보내는 경우가 있는데,
+    // 그때 뒤쪽을 전부 추천 질문으로 간주하면 답변 본문이 통째로 사라져 버림.
+    // 그래서 "짧은 한 줄"일 때만 진짜 추천 질문으로 인정한다.
     static func extractSuggestion(from text: String) -> String? {
-        guard let start = text.range(of: nextMarker) else { return nil }
+        // 마커가 여러 번 나왔다면 맨 뒤의 것이 진짜 추천 질문
+        guard let start = text.range(of: nextMarker, options: .backwards) else { return nil }
         var tail = String(text[start.upperBound...])
         if let end = tail.range(of: nextMarkerEnd) {
+            // 닫는 태그 뒤에 본문이 더 이어진다면, 답변 중간에 잘못 출력된 것이므로 인정하지 않음
+            let remainder = String(tail[end.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard remainder.isEmpty else { return nil }
             tail = String(tail[..<end.lowerBound])
         }
         let cleaned = tail.trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? nil : cleaned
+        guard !cleaned.isEmpty,
+              cleaned.count <= 80,
+              !cleaned.contains("\n") else { return nil }
+        return cleaned
+    }
+
+    // 추천 질문 마커를 제거한 본문.
+    // 마커 뒤가 추천 질문으로 보이지 않으면(= 모델이 중간에 잘못 출력한 경우)
+    // 내용을 잘라내지 않고 마커 토큰만 지워서 본문을 모두 살린다.
+    static func cleanedAnswer(from text: String) -> String {
+        if extractSuggestion(from: text) != nil {
+            if let start = text.range(of: nextMarker, options: .backwards) {
+                return String(text[..<start.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return text
+            .replacingOccurrences(of: nextMarker, with: "")
+            .replacingOccurrences(of: nextMarkerEnd, with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MathWebView에 실제로 넘길 전체 텍스트 (완료된 기록 + 진행 중인 턴)

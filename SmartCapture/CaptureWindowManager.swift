@@ -495,9 +495,15 @@ class CaptureWindowManager {
             8. \\begin{align} 대신 반드시 \\begin{aligned}를 사용해.
             9. 괄호를 열었으면 반드시 닫고, 수식 블록($ 또는 $$)의 짝을 완벽하게 맞춰서 출력해.
             10. [매우 중요] 답변을 모두 마친 뒤, 맨 마지막 줄에 사용자가 이어서 궁금해할 만한
-                질문 하나를 반드시 아래 형식으로 딱 한 번만 출력해. 다음에 바로 ai에이전트에게 질문이 이어질거니까 사람이 ai에게 질문하는 어투로 형성해.
+                질문 하나를 반드시 아래 형식으로 딱 한 번만 출력해. 다음에 바로 ai에이전트에게 질문이 이어질거니까 사람이 ai에게 질문하는 어투로 형성해. 무조건 반말로.
                 형식: [[NEXT]]질문 내용[[/NEXT]]
                 - 20자 내외의 한국어 한 문장으로 자연스럽게 써.
+                - [[NEXT]] 와 [[/NEXT]] 기호를 절대 생략하지 마. 이 기호가 없으면 시스템이
+                  질문을 인식하지 못해 답변 본문에 그대로 섞여 버린다.
+                -  잘못된 예(기호 없이 문장만 씀):
+                   ELF 파일에서 BSS 섹션이 메모리를 차지하는 방식이 궁금해요.
+                -  올바른 예:
+                   [[NEXT]]ELF 파일에서 BSS 섹션은 어떻게 처리돼?[[/NEXT]]
                 - 이 줄은 사용자에게 보이지 않으니, 답변 본문에서 이 줄을 언급하지 마.
                 - 답변 본문 중간에는 절대 쓰지 말고 오직 맨 마지막 줄에만 써.
             """
@@ -520,8 +526,12 @@ class CaptureWindowManager {
                 // 스트리밍 방식에서는 한도가 첫 글자가 뜨는 속도에 영향을 주지 않아 속도 이득이 없고,
                 // 오히려 긴 한국어 답변이 문장 중간에서 잘리는 문제만 일으켰음.
                 // (그래도 잘리는 경우를 대비해 finishReason == "MAX_TOKENS" 감지 로직은 유지)
+                // thinkingLevel: minimal은 지시를 끝까지 따르지 않는 경향이 있어
+                // 추천 질문 마커([[NEXT]])를 통째로 빠뜨리는 문제가 실제로 발생함.
+                // low로 한 단계 올려 지시 준수와 답변 품질을 확보 (첫 글자까지의 시간은 소폭 증가).
+                // 속도를 최우선으로 되돌리려면 이 값만 "minimal"로 바꾸면 됨.
                 "generationConfig": [
-                    "thinkingConfig": ["thinkingLevel": "minimal"]
+                    "thinkingConfig": ["thinkingLevel": "low"]
                 ]
             ]
             
@@ -620,8 +630,7 @@ class CaptureWindowManager {
                         // 답변 끝에 붙은 추천 질문을 떼어내고, 본문에는 남기지 않음.
                         // 대화 기록에도 정리된 텍스트만 넣어야 다음 요청에서 마커가 되먹임되지 않음.
                         var suggestion = ResultViewModel.extractSuggestion(from: fullAnswerText)
-                        var cleanAnswer = ResultViewModel.stripSuggestion(fullAnswerText)
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        var cleanAnswer = ResultViewModel.cleanedAnswer(from: fullAnswerText)
 
                         // 토큰 한도에 걸려 잘린 경우: 사용자가 알 수 있게 안내를 붙이고,
                         // 추천 질문 마커도 끝까지 도달하지 못했으므로 "이어서 설명해줘"를 추천으로 제공
